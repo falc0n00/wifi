@@ -26,7 +26,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pyinstaller
-          pip install PyQt5
+          pip install PySide2
 
       - name: Create UAC manifest
         shell: pwsh
@@ -46,7 +46,7 @@ jobs:
 
       - name: Build EXE with PyInstaller
         run: |
-          pyinstaller --onefile --console --manifest admin.manifest --runtime-hook pyi_rth_pyqt5.py --name HotspotController-${{ matrix.arch }} hotspot_controller.py
+          pyinstaller --onefile --console --manifest admin.manifest --name HotspotController-${{ matrix.arch }} hotspot_controller.py
 
       - name: Upload EXE as artifact
         uses: actions/upload-artifact@v4
