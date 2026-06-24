@@ -10,7 +10,7 @@ jobs:
   build:
     strategy:
       matrix:
-        arch: [x86, x64]   # 32-bit and 64-bit
+        arch: [x86, x64]
     runs-on: windows-latest
 
     steps:
@@ -19,7 +19,7 @@ jobs:
       - name: Set up Python (${{ matrix.arch }})
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.8'
           architecture: ${{ matrix.arch }}
 
       - name: Install dependencies
