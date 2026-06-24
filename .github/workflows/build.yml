@@ -3,7 +3,8 @@ name: Build and Release EXE
 on:
   push:
     tags:
-      - 'v*.*.*'   # triggers on version tags
+      - 'v*.*.*'
+  workflow_dispatch:   # triggers on version tags
 
 jobs:
   build:
