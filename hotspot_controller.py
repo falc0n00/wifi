@@ -1,24 +1,18 @@
 #!/usr/bin/env python3
 """
-WiFi Hotspot Controller with Approval System (PySide2 version)
-Run as Administrator on Windows 7/10/11.
+WiFi Hotspot Controller with Approval System
+Run as Administrator on Windows 10/11.
 """
 
 import subprocess
 import time
 import threading
+import tkinter as tk
+from tkinter import ttk, messagebox, simpledialog
 import re
+import queue
 from datetime import datetime, timedelta
-import sys
 import os
-
-from PySide2.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QLineEdit, QPushButton, QSpinBox, QGroupBox, QTreeWidget,
-    QTreeWidgetItem, QHeaderView, QMessageBox, QInputDialog, QStatusBar,
-    QFormLayout
-)
-from PySide2.QtCore import QThread, Signal, Qt, QTimer
 
 
 # ---------------------- Hotspot engine ----------------------
@@ -40,8 +34,7 @@ class HotspotManager:
             if match:
                 self.interface_name = match.group(1).strip()
             else:
-                raise Exception("Could not find hosted network interface. Is your Wi-Fi adapter supported?")
-
+                raise Exception("Could not find hosted network interface.")
             ipconfig = subprocess.check_output("ipconfig", shell=True, text=True)
             adapter_sections = ipconfig.split("\r\n\r\n")
             for sec in adapter_sections:
@@ -58,41 +51,12 @@ class HotspotManager:
         except subprocess.CalledProcessError as e:
             raise Exception(f"Failed to run netsh. Are you running as Administrator? {e}")
 
-    def enable_ics(self):
-        ps_script = f'''
-        $public = Get-NetAdapter -Name "{self.internet_adapter}"
-        $private = Get-NetAdapter -Name "{self.interface_name}"
-        if (!$public -or !$private) {{
-            Write-Error "Adapters not found"
-            return
-        }}
-        $mpublic = Get-WmiObject -Class Win32_NetworkAdapter -Filter "NetConnectionID='{self.internet_adapter}'"
-        $mprivate = Get-WmiObject -Class Win32_NetworkAdapter -Filter "NetConnectionID='{self.interface_name}'"
-        if ($mpublic -and $mprivate) {{
-            $mpublic.EnableStatic(0, "192.168.137.1", "255.255.255.0")
-            $sharing = $mpublic.EnableSharing(0)
-        }} else {{
-            $mgr = New-Object -ComObject HNetCfg.HNetShare
-            $publicConfig = $mgr.EnumEveryConnection |? {{ $_.Name -eq "{self.internet_adapter}" }}
-            $privateConfig = $mgr.EnumEveryConnection |? {{ $_.Name -eq "{self.interface_name}" }}
-            $publicConfig.SharingConfiguration.EnableSharing(0, $privateConfig)
-        }}
-        '''
-        try:
-            subprocess.run(["powershell", "-Command", ps_script], capture_output=True, text=True, check=True)
-        except subprocess.CalledProcessError as e:
-            raise Exception(f"Could not enable ICS: {e.stderr}")
-
     def start_hotspot(self):
         subprocess.run(f'netsh wlan set hostednetwork mode=allow ssid={self.ssid} key={self.password} maxclients={self.max_clients}',
                        shell=True, check=True, capture_output=True)
         subprocess.run('netsh wlan start hostednetwork', shell=True, check=True, capture_output=True)
         self.running = True
         self.find_adapters()
-        try:
-            self.enable_ics()
-        except Exception:
-            pass
 
     def stop_hotspot(self):
         subprocess.run('netsh wlan stop hostednetwork', shell=True, capture_output=True)
@@ -181,20 +145,108 @@ class HotspotManager:
             pass
 
 
-# ---------------------- Monitor Thread ----------------------
-class MonitorThread(QThread):
-    new_device = Signal(str)
-    remove_device = Signal(str)
-    update_list = Signal()
-    error_occurred = Signal(str)
+# ---------------------- GUI App ----------------------
+class HotspotGUI:
+    def __init__(self):
+        self.manager = HotspotManager()
+        self.root = tk.Tk()
+        self.root.title("WiFi Hotspot Controller")
+        self.root.geometry("850x550")
+        self.monitor_queue = queue.Queue()
+        self.stop_monitor = threading.Event()
+        self.monitor_thread = None
+        self.build_ui()
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
-    def __init__(self, manager):
-        super().__init__()
-        self.manager = manager
-        self.running = True
+    def build_ui(self):
+        config_frame = ttk.LabelFrame(self.root, text="Hotspot Configuration", padding=10)
+        config_frame.pack(fill="x", padx=10, pady=5)
 
-    def run(self):
-        while self.running:
+        ttk.Label(config_frame, text="SSID:").grid(row=0, column=0, sticky="e")
+        self.ssid_entry = ttk.Entry(config_frame, width=20)
+        self.ssid_entry.insert(0, "MyHotspot")
+        self.ssid_entry.grid(row=0, column=1, padx=5)
+
+        ttk.Label(config_frame, text="Password:").grid(row=0, column=2, sticky="e")
+        self.password_entry = ttk.Entry(config_frame, width=20, show="*")
+        self.password_entry.insert(0, "StrongPass123")
+        self.password_entry.grid(row=0, column=3, padx=5)
+
+        ttk.Label(config_frame, text="Max Clients:").grid(row=0, column=4, sticky="e")
+        self.max_clients_spin = ttk.Spinbox(config_frame, from_=1, to=32, width=5)
+        self.max_clients_spin.delete(0, "end")
+        self.max_clients_spin.insert(0, "10")
+        self.max_clients_spin.grid(row=0, column=5, padx=5)
+
+        self.start_btn = ttk.Button(config_frame, text="Start Hotspot", command=self.start)
+        self.start_btn.grid(row=0, column=6, padx=10)
+
+        self.stop_btn = ttk.Button(config_frame, text="Stop Hotspot", command=self.stop, state="disabled")
+        self.stop_btn.grid(row=0, column=7, padx=10)
+
+        client_frame = ttk.LabelFrame(self.root, text="Connected Devices", padding=10)
+        client_frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+        columns = ("MAC", "IP", "Hostname", "Status", "Expires")
+        self.tree = ttk.Treeview(client_frame, columns=columns, show="headings", selectmode="browse")
+        for col in columns:
+            self.tree.heading(col, text=col)
+            self.tree.column(col, width=130 if col == "MAC" else 110)
+        self.tree.pack(side="left", fill="both", expand=True)
+
+        scrollbar = ttk.Scrollbar(client_frame, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+
+        btn_frame = ttk.Frame(self.root, padding=5)
+        btn_frame.pack(fill="x", padx=10, pady=5)
+
+        self.approve_btn = ttk.Button(btn_frame, text="Approve", command=self.approve)
+        self.approve_btn.pack(side="left", padx=5)
+
+        self.block_btn = ttk.Button(btn_frame, text="Block Permanently", command=self.block_permanent)
+        self.block_btn.pack(side="left", padx=5)
+
+        self.unblock_btn = ttk.Button(btn_frame, text="Unblock (Whitelist)", command=self.unblock)
+        self.unblock_btn.pack(side="left", padx=5)
+
+        self.time_limit_btn = ttk.Button(btn_frame, text="Set Time Limit (min)", command=self.set_time_limit)
+        self.time_limit_btn.pack(side="left", padx=5)
+
+        self.status_var = tk.StringVar(value="Hotspot inactive")
+        status_bar = ttk.Label(self.root, textvariable=self.status_var, relief="sunken", anchor="w")
+        status_bar.pack(fill="x", side="bottom")
+
+    def start(self):
+        try:
+            ssid = self.ssid_entry.get()
+            password = self.password_entry.get()
+            max_clients = int(self.max_clients_spin.get())
+            self.manager.set_config(ssid, password, max_clients)
+            self.manager.start_hotspot()
+            self.status_var.set("Hotspot active")
+            self.start_btn.config(state="disabled")
+            self.stop_btn.config(state="normal")
+            self.stop_monitor.clear()
+            self.monitor_thread = threading.Thread(target=self.monitor_loop, daemon=True)
+            self.monitor_thread.start()
+            self.poll_queue()
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+
+    def stop(self):
+        self.stop_monitor.set()
+        if self.monitor_thread:
+            self.monitor_thread.join(timeout=1)
+        self.manager.stop_hotspot()
+        self.manager.cleanup_rules()
+        self.status_var.set("Hotspot inactive")
+        self.start_btn.config(state="normal")
+        self.stop_btn.config(state="disabled")
+        self.tree.delete(*self.tree.get_children())
+
+    def monitor_loop(self):
+        while not self.stop_monitor.is_set():
             try:
                 current_clients = self.manager.get_connected_clients()
                 current_macs = set()
@@ -211,7 +263,7 @@ class MonitorThread(QThread):
                                 'expiry': None,
                                 'first_seen': datetime.now(),
                             }
-                            self.new_device.emit(mac)
+                            self.monitor_queue.put(("new_device", mac))
                     else:
                         dev = self.manager.connected_devices[mac]
                         if dev['ip'] != ip:
@@ -223,211 +275,85 @@ class MonitorThread(QThread):
                         if dev['expiry'] and datetime.now() > dev['expiry']:
                             self.manager.block_device(mac, ip)
                             dev['expiry'] = None
-                            self.update_list.emit()
+                            self.monitor_queue.put(("time_limit", mac))
 
                 for mac in list(self.manager.connected_devices.keys()):
                     if mac not in current_macs:
                         dev = self.manager.connected_devices.pop(mac)
                         if not dev['approved'] and dev['block_rule_name']:
                             self.manager.unblock_internet(dev['block_rule_name'])
-                        self.remove_device.emit(mac)
+                        self.monitor_queue.put(("remove_device", mac))
 
-                self.update_list.emit()
+                self.monitor_queue.put(("update", None))
                 time.sleep(2)
             except Exception as e:
-                self.error_occurred.emit(str(e))
+                self.monitor_queue.put(("error", str(e)))
                 time.sleep(5)
 
-    def stop(self):
-        self.running = False
-
-
-# ---------------------- Main Window ----------------------
-class MainWindow(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.manager = HotspotManager()
-        self.monitor = None
-        self.init_ui()
-
-    def init_ui(self):
-        self.setWindowTitle("WiFi Hotspot Controller")
-        self.setMinimumSize(850, 550)
-
-        central = QWidget()
-        self.setCentralWidget(central)
-        main_layout = QVBoxLayout(central)
-
-        config_group = QGroupBox("Hotspot Configuration")
-        config_layout = QFormLayout()
-        config_group.setLayout(config_layout)
-
-        self.ssid_entry = QLineEdit("MyHotspot")
-        config_layout.addRow("SSID:", self.ssid_entry)
-
-        self.password_entry = QLineEdit("StrongPass123")
-        self.password_entry.setEchoMode(QLineEdit.Password)
-        config_layout.addRow("Password:", self.password_entry)
-
-        self.max_clients_spin = QSpinBox()
-        self.max_clients_spin.setRange(1, 32)
-        self.max_clients_spin.setValue(10)
-        config_layout.addRow("Max Clients:", self.max_clients_spin)
-
-        btn_layout = QHBoxLayout()
-        self.start_btn = QPushButton("Start Hotspot")
-        self.start_btn.clicked.connect(self.start)
-        btn_layout.addWidget(self.start_btn)
-
-        self.stop_btn = QPushButton("Stop Hotspot")
-        self.stop_btn.clicked.connect(self.stop)
-        self.stop_btn.setEnabled(False)
-        btn_layout.addWidget(self.stop_btn)
-
-        config_layout.addRow(btn_layout)
-        main_layout.addWidget(config_group)
-
-        clients_group = QGroupBox("Connected Devices")
-        clients_layout = QVBoxLayout()
-        clients_group.setLayout(clients_layout)
-
-        self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["MAC", "IP", "Hostname", "Status", "Expires"])
-        self.tree.setAlternatingRowColors(True)
-        self.tree.header().setSectionResizeMode(QHeaderView.Stretch)
-        clients_layout.addWidget(self.tree)
-
-        action_layout = QHBoxLayout()
-        self.approve_btn = QPushButton("Approve")
-        self.approve_btn.clicked.connect(self.approve)
-        action_layout.addWidget(self.approve_btn)
-
-        self.block_btn = QPushButton("Block Permanently")
-        self.block_btn.clicked.connect(self.block_permanent)
-        action_layout.addWidget(self.block_btn)
-
-        self.unblock_btn = QPushButton("Unblock (Whitelist)")
-        self.unblock_btn.clicked.connect(self.unblock)
-        action_layout.addWidget(self.unblock_btn)
-
-        self.time_btn = QPushButton("Set Time Limit (min)")
-        self.time_btn.clicked.connect(self.set_time_limit)
-        action_layout.addWidget(self.time_btn)
-
-        clients_layout.addLayout(action_layout)
-        main_layout.addWidget(clients_group)
-
-        self.status_bar = QStatusBar()
-        self.setStatusBar(self.status_bar)
-        self.status_bar.showMessage("Hotspot inactive")
-
-    def start(self):
+    def poll_queue(self):
         try:
-            ssid = self.ssid_entry.text()
-            password = self.password_entry.text()
-            max_clients = self.max_clients_spin.value()
-            self.manager.set_config(ssid, password, max_clients)
-            self.manager.start_hotspot()
+            while True:
+                msg = self.monitor_queue.get_nowait()
+                if msg[0] in ("update", "new_device", "remove_device", "time_limit"):
+                    self.update_tree()
+                elif msg[0] == "error":
+                    self.status_var.set(f"Error: {msg[1]}")
+        except queue.Empty:
+            pass
+        if not self.stop_monitor.is_set():
+            self.root.after(1000, self.poll_queue)
 
-            self.status_bar.showMessage("Hotspot active")
-            self.start_btn.setEnabled(False)
-            self.stop_btn.setEnabled(True)
-
-            self.monitor = MonitorThread(self.manager)
-            self.monitor.new_device.connect(self.on_new_device)
-            self.monitor.remove_device.connect(self.refresh_tree)
-            self.monitor.update_list.connect(self.refresh_tree)
-            self.monitor.error_occurred.connect(self.on_error)
-            self.monitor.start()
-
-        except Exception as e:
-            QMessageBox.critical(self, "Error", str(e))
-
-    def stop(self):
-        if self.monitor:
-            self.monitor.stop()
-            self.monitor.wait(2000)
-        self.manager.stop_hotspot()
-        self.manager.cleanup_rules()
-        self.status_bar.showMessage("Hotspot inactive")
-        self.start_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
-        self.tree.clear()
-
-    def refresh_tree(self):
-        self.tree.clear()
+    def update_tree(self):
+        self.tree.delete(*self.tree.get_children())
         for mac, dev in self.manager.connected_devices.items():
             status = "Approved" if dev['approved'] else ("Blocked" if mac in self.manager.blocked_devices else "Pending")
             expiry = dev['expiry'].strftime("%H:%M:%S") if dev['expiry'] else "Never"
-            item = QTreeWidgetItem([mac, dev['ip'], dev['hostname'], status, expiry])
-            self.tree.addTopLevelItem(item)
+            self.tree.insert("", "end", values=(mac, dev['ip'], dev['hostname'], status, expiry))
 
-    def on_new_device(self, mac):
-        self.refresh_tree()
-        self.status_bar.showMessage(f"New device connected: {mac}")
-
-    def on_error(self, err):
-        self.status_bar.showMessage(f"Error: {err}")
-
-    def get_selected_mac(self):
-        item = self.tree.currentItem()
-        if item:
-            return item.text(0)
-        return None
+    def get_selected_device(self):
+        sel = self.tree.selection()
+        if not sel:
+            return None
+        return self.tree.item(sel[0])['values'][0]
 
     def approve(self):
-        mac = self.get_selected_mac()
+        mac = self.get_selected_device()
         if mac:
             dev = self.manager.connected_devices.get(mac)
             if dev:
                 self.manager.approve_device(mac, dev['ip'])
-                self.refresh_tree()
-                self.status_bar.showMessage(f"Approved: {mac}")
+                self.update_tree()
 
     def block_permanent(self):
-        mac = self.get_selected_mac()
+        mac = self.get_selected_device()
         if mac:
             dev = self.manager.connected_devices.get(mac)
             if dev:
                 self.manager.block_device(mac, dev['ip'])
-                self.refresh_tree()
-                self.status_bar.showMessage(f"Blocked: {mac}")
+                self.update_tree()
 
     def unblock(self):
-        mac = self.get_selected_mac()
+        mac = self.get_selected_device()
         if mac:
             self.manager.unblock_permanently(mac)
-            self.refresh_tree()
-            self.status_bar.showMessage(f"Unblocked: {mac}")
+            self.update_tree()
 
     def set_time_limit(self):
-        mac = self.get_selected_mac()
+        mac = self.get_selected_device()
         if mac:
-            minutes, ok = QInputDialog.getInt(self, "Time Limit", "Minutes until disconnect (0 = unlimited):", 60, 0, 1440)
-            if ok:
-                if minutes > 0:
-                    self.manager.set_time_limit(mac, minutes)
-                else:
-                    self.manager.connected_devices[mac]['expiry'] = None
-                self.refresh_tree()
-                self.status_bar.showMessage(f"Time limit set for {mac}")
+            minutes = simpledialog.askinteger("Time Limit", "Minutes until disconnect (0 = unlimited):")
+            if minutes is not None and minutes > 0:
+                self.manager.set_time_limit(mac, minutes)
+                self.update_tree()
+            elif minutes == 0:
+                self.manager.connected_devices[mac]['expiry'] = None
+                self.update_tree()
 
-    def closeEvent(self, event):
-        if self.monitor and self.monitor.isRunning():
-            self.monitor.stop()
-            self.monitor.wait(2000)
-        if self.manager.running:
-            self.manager.stop_hotspot()
-            self.manager.cleanup_rules()
-        event.accept()
-
-
-def main():
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec_())
+    def on_close(self):
+        self.stop()
+        self.root.destroy()
 
 
 if __name__ == "__main__":
-    main()
+    app = HotspotGUI()
+    app.root.mainloop()
