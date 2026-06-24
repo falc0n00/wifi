@@ -1,22 +1,6 @@
 #!/usr/bin/env python3
-# Fix for PyQt5 DLL loading on Windows with PyInstaller
-import os
-import sys
-
-if getattr(sys, 'frozen', False):
-    # Running as bundled exe
-    base_path = sys._MEIPASS
-    qt_bin = os.path.join(base_path, 'PyQt5', 'Qt5', 'bin')
-    if os.path.exists(qt_bin):
-        os.environ['PATH'] = qt_bin + os.pathsep + os.environ.get('PATH', '')
-        try:
-            os.add_dll_directory(qt_bin)
-        except Exception:
-            pass
-
-
 """
-WiFi Hotspot Controller with Approval System (PyQt5 version)
+WiFi Hotspot Controller with Approval System (PySide2 version)
 Run as Administrator on Windows 7/10/11.
 """
 
@@ -28,13 +12,13 @@ from datetime import datetime, timedelta
 import sys
 import os
 
-from PyQt5.QtWidgets import (
+from PySide2.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QSpinBox, QGroupBox, QTreeWidget,
     QTreeWidgetItem, QHeaderView, QMessageBox, QInputDialog, QStatusBar,
     QFormLayout
 )
-from PyQt5.QtCore import QThread, pyqtSignal, Qt, QTimer
+from PySide2.QtCore import QThread, Signal, Qt, QTimer
 
 
 # ---------------------- Hotspot engine ----------------------
@@ -108,7 +92,7 @@ class HotspotManager:
         try:
             self.enable_ics()
         except Exception:
-            pass  # user can manually share
+            pass
 
     def stop_hotspot(self):
         subprocess.run('netsh wlan stop hostednetwork', shell=True, capture_output=True)
@@ -199,10 +183,10 @@ class HotspotManager:
 
 # ---------------------- Monitor Thread ----------------------
 class MonitorThread(QThread):
-    new_device = pyqtSignal(str)
-    remove_device = pyqtSignal(str)
-    update_list = pyqtSignal()
-    error_occurred = pyqtSignal(str)
+    new_device = Signal(str)
+    remove_device = Signal(str)
+    update_list = Signal()
+    error_occurred = Signal(str)
 
     def __init__(self, manager):
         super().__init__()
@@ -236,7 +220,6 @@ class MonitorThread(QThread):
                                 dev['block_rule_name'] = self.manager.block_internet(ip)
                             dev['ip'] = ip
                         dev['hostname'] = hostname
-                        # Time limit check
                         if dev['expiry'] and datetime.now() > dev['expiry']:
                             self.manager.block_device(mac, ip)
                             dev['expiry'] = None
@@ -275,7 +258,6 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
 
-        # Config group
         config_group = QGroupBox("Hotspot Configuration")
         config_layout = QFormLayout()
         config_group.setLayout(config_layout)
@@ -305,7 +287,6 @@ class MainWindow(QMainWindow):
         config_layout.addRow(btn_layout)
         main_layout.addWidget(config_group)
 
-        # Clients group
         clients_group = QGroupBox("Connected Devices")
         clients_layout = QVBoxLayout()
         clients_group.setLayout(clients_layout)
@@ -336,7 +317,6 @@ class MainWindow(QMainWindow):
         clients_layout.addLayout(action_layout)
         main_layout.addWidget(clients_group)
 
-        # Status bar
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Hotspot inactive")
@@ -353,7 +333,6 @@ class MainWindow(QMainWindow):
             self.start_btn.setEnabled(False)
             self.stop_btn.setEnabled(True)
 
-            # Start monitor
             self.monitor = MonitorThread(self.manager)
             self.monitor.new_device.connect(self.on_new_device)
             self.monitor.remove_device.connect(self.refresh_tree)
@@ -443,10 +422,8 @@ class MainWindow(QMainWindow):
         event.accept()
 
 
-# ---------------------- Entry Point ----------------------
 def main():
     app = QApplication(sys.argv)
-    app.setStyle('Fusion')  # Looks good on Windows 7
     window = MainWindow()
     window.show()
     sys.exit(app.exec_())
