@@ -1,0 +1,55 @@
+name: Build and Release EXE
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'   # triggers on version tags
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install pyinstaller
+
+      - name: Create UAC manifest
+        shell: pwsh
+        run: |
+          @"
+          <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+          <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+            <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+              <security>
+                <requestedPrivileges>
+                  <requestedExecutionLevel level="requireAdministrator" uiAccess="false"/>
+                </requestedPrivileges>
+              </security>
+            </trustInfo>
+          </assembly>
+          "@ | Out-File -FilePath admin.manifest -Encoding utf8
+
+      - name: Build EXE with PyInstaller
+        run: |
+          pyinstaller --onefile --windowed --manifest admin.manifest --name HotspotController hotspot_controller.py
+
+      - name: Upload EXE as artifact (optional)
+        uses: actions/upload-artifact@v4
+        with:
+          name: HotspotController
+          path: dist/HotspotController.exe
+
+      - name: Create Release and Upload EXE
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/HotspotController.exe
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
