@@ -1,3 +1,18 @@
+# Fix for PyQt5 DLL loading on Windows with PyInstaller
+import os
+import sys
+
+if getattr(sys, 'frozen', False):
+    # Running as bundled exe
+    base_path = sys._MEIPASS
+    qt_bin = os.path.join(base_path, 'PyQt5', 'Qt5', 'bin')
+    if os.path.exists(qt_bin):
+        os.environ['PATH'] = qt_bin + os.pathsep + os.environ.get('PATH', '')
+        try:
+            os.add_dll_directory(qt_bin)
+        except Exception:
+            pass
+
 #!/usr/bin/env python3
 """
 WiFi Hotspot Controller with Approval System (PyQt5 version)
