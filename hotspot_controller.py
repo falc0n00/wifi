@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # Fix for PyQt5 DLL loading on Windows with PyInstaller
 import os
 import sys
@@ -13,7 +14,7 @@ if getattr(sys, 'frozen', False):
         except Exception:
             pass
 
-#!/usr/bin/env python3
+
 """
 WiFi Hotspot Controller with Approval System (PyQt5 version)
 Run as Administrator on Windows 7/10/11.
