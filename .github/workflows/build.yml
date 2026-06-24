@@ -1,4 +1,4 @@
-name: Build and Release EXE
+name: Build and Release EXE (32-bit and 64-bit)
 
 on:
   push:
@@ -8,15 +8,19 @@ on:
 
 jobs:
   build:
+    strategy:
+      matrix:
+        arch: [x86, x64]   # 32-bit and 64-bit
     runs-on: windows-latest
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python (${{ matrix.arch }})
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          architecture: ${{ matrix.arch }}
 
       - name: Install dependencies
         run: pip install pyinstaller
@@ -39,19 +43,21 @@ jobs:
 
       - name: Build EXE with PyInstaller
         run: |
-          pyinstaller --onefile --windowed --manifest admin.manifest --name HotspotController hotspot_controller.py
+          pyinstaller --onefile --windowed --manifest admin.manifest --name HotspotController-${{ matrix.arch }} hotspot_controller.py
 
       - name: Upload EXE as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: HotspotController
-          path: dist/HotspotController.exe
+          name: HotspotController-${{ matrix.arch }}
+          path: dist/HotspotController-${{ matrix.arch }}.exe
 
-      - name: Create Release and Upload EXE (tags only)
+      - name: Create Release and Upload both EXEs (tags only)
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/HotspotController.exe
+          files: |
+            dist/HotspotController-x86.exe
+            dist/HotspotController-x64.exe
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
