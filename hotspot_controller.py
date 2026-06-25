@@ -51,9 +51,19 @@ class HotspotManager:
         except subprocess.CalledProcessError as e:
             raise Exception(f"Failed to run netsh. Are you running as Administrator? {e}")
 
-    def start_hotspot(self):
-        subprocess.run(f'netsh wlan set hostednetwork mode=allow ssid={self.ssid} key={self.password} maxclients={self.max_clients}',
-                       shell=True, check=True, capture_output=True)
+        def start_hotspot(self):
+        # Try with maxclients first (Windows 8+), fallback for Windows 7
+        try:
+            subprocess.run(
+                f'netsh wlan set hostednetwork mode=allow ssid={self.ssid} key={self.password} maxclients={self.max_clients}',
+                shell=True, check=True, capture_output=True, text=True
+            )
+        except subprocess.CalledProcessError:
+            # Windows 7 doesn't support maxclients, retry without it
+            subprocess.run(
+                f'netsh wlan set hostednetwork mode=allow ssid={self.ssid} key={self.password}',
+                shell=True, check=True, capture_output=True, text=True
+            )
         subprocess.run('netsh wlan start hostednetwork', shell=True, check=True, capture_output=True)
         self.running = True
         self.find_adapters()
