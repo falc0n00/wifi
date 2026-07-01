@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 WiFi Hotspot Controller with Approval System
-Run as Administrator on Windows 10/11.
+Must be run as Administrator on Windows 10/11.
 """
 
 import subprocess
@@ -13,6 +13,16 @@ import re
 import queue
 from datetime import datetime, timedelta
 import os
+import sys
+import ctypes
+
+
+# ---------------------- Admin check ----------------------
+def is_admin():
+    try:
+        return ctypes.windll.shell32.IsUserAnAdmin()
+    except:
+        return False
 
 
 # ---------------------- Hotspot engine ----------------------
@@ -29,13 +39,18 @@ class HotspotManager:
 
     def find_adapters(self):
         try:
-            output = subprocess.check_output("netsh wlan show hostednetwork", shell=True, text=True)
+            output = subprocess.check_output(
+                ["netsh", "wlan", "show", "hostednetwork"],
+                stderr=subprocess.STDOUT,
+                text=True
+            )
             match = re.search(r"Interface name\s*:\s*(.+)", output)
             if match:
                 self.interface_name = match.group(1).strip()
             else:
                 raise Exception("Could not find hosted network interface.")
-            ipconfig = subprocess.check_output("ipconfig", shell=True, text=True)
+
+            ipconfig = subprocess.check_output("ipconfig", text=True)
             adapter_sections = ipconfig.split("\r\n\r\n")
             for sec in adapter_sections:
                 if "Default Gateway" in sec and " 0.0.0.0" not in sec:
@@ -49,27 +64,34 @@ class HotspotManager:
                         return
             raise Exception("Could not auto-detect internet adapter.")
         except subprocess.CalledProcessError as e:
-            raise Exception(f"Failed to run netsh. Are you running as Administrator? {e}")
+            raise Exception(f"Failed to run netsh. Are you running as Administrator? {e.output}")
 
-        def start_hotspot(self):
+    def start_hotspot(self):
         # Try with maxclients first (Windows 8+), fallback for Windows 7
         try:
             subprocess.run(
-                f'netsh wlan set hostednetwork mode=allow ssid={self.ssid} key={self.password} maxclients={self.max_clients}',
-                shell=True, check=True, capture_output=True, text=True
+                ["netsh", "wlan", "set", "hostednetwork",
+                 "mode=allow", f"ssid={self.ssid}", f"key={self.password}",
+                 f"maxclients={self.max_clients}"],
+                check=True, capture_output=True, text=True
             )
         except subprocess.CalledProcessError:
             # Windows 7 doesn't support maxclients, retry without it
             subprocess.run(
-                f'netsh wlan set hostednetwork mode=allow ssid={self.ssid} key={self.password}',
-                shell=True, check=True, capture_output=True, text=True
+                ["netsh", "wlan", "set", "hostednetwork",
+                 "mode=allow", f"ssid={self.ssid}", f"key={self.password}"],
+                check=True, capture_output=True, text=True
             )
-        subprocess.run('netsh wlan start hostednetwork', shell=True, check=True, capture_output=True)
+        subprocess.run(
+            ["netsh", "wlan", "start", "hostednetwork"],
+            check=True, capture_output=True, text=True
+        )
         self.running = True
         self.find_adapters()
 
     def stop_hotspot(self):
-        subprocess.run('netsh wlan stop hostednetwork', shell=True, capture_output=True)
+        subprocess.run(["netsh", "wlan", "stop", "hostednetwork"],
+                       capture_output=True, text=True)
         self.running = False
 
     def set_config(self, ssid, password, max_clients):
@@ -83,7 +105,11 @@ class HotspotManager:
 
     def get_connected_clients(self):
         try:
-            output = subprocess.check_output('netsh wlan show hostednetwork', shell=True, text=True)
+            output = subprocess.check_output(
+                ["netsh", "wlan", "show", "hostednetwork"],
+                stderr=subprocess.STDOUT,
+                text=True
+            )
         except subprocess.CalledProcessError:
             return []
         client_section = re.findall(r'Clients connected.*?\n(.*?)\n\n', output, re.DOTALL)
@@ -103,13 +129,19 @@ class HotspotManager:
     def block_internet(self, ip_address):
         rule_name = f"HotspotBlock_{ip_address}"
         subprocess.run(
-            f'netsh advfirewall firewall add rule name="{rule_name}" dir=out remoteip={ip_address} protocol=any action=block',
-            shell=True, capture_output=True
+            ["netsh", "advfirewall", "firewall", "add", "rule",
+             f"name={rule_name}", "dir=out", f"remoteip={ip_address}",
+             "protocol=any", "action=block"],
+            capture_output=True, text=True
         )
         return rule_name
 
     def unblock_internet(self, rule_name):
-        subprocess.run(f'netsh advfirewall firewall delete rule name="{rule_name}"', shell=True, capture_output=True)
+        subprocess.run(
+            ["netsh", "advfirewall", "firewall", "delete", "rule",
+             f"name={rule_name}"],
+            capture_output=True, text=True
+        )
 
     def approve_device(self, mac, ip):
         dev = self.connected_devices.get(mac)
@@ -124,8 +156,7 @@ class HotspotManager:
         dev = self.connected_devices.get(mac)
         if dev:
             if dev['approved']:
-                rule_name = f"HotspotBlock_{ip}"
-                self.block_internet(ip)
+                rule_name = self.block_internet(ip)
                 dev['block_rule_name'] = rule_name
             dev['approved'] = False
             self.blocked_devices.add(mac)
@@ -146,11 +177,18 @@ class HotspotManager:
 
     def cleanup_rules(self):
         try:
-            rules = subprocess.check_output('netsh advfirewall firewall show rule name=all', shell=True, text=True)
+            rules = subprocess.check_output(
+                ["netsh", "advfirewall", "firewall", "show", "rule", "name=all"],
+                stderr=subprocess.STDOUT,
+                text=True
+            )
             for line in rules.splitlines():
                 if 'HotspotBlock_' in line:
-                    rule_name = line.strip().split(":")[-1].strip()
-                    self.unblock_internet(rule_name)
+                    # Extract rule name from line like "Rule Name: HotspotBlock_192.168.1.5"
+                    parts = line.strip().split(":")
+                    if len(parts) >= 2:
+                        rule_name = parts[1].strip()
+                        self.unblock_internet(rule_name)
         except:
             pass
 
@@ -158,6 +196,15 @@ class HotspotManager:
 # ---------------------- GUI App ----------------------
 class HotspotGUI:
     def __init__(self):
+        # Check admin privileges
+        if not is_admin():
+            messagebox.showerror(
+                "Administrator Required",
+                "This app must be run as Administrator.\n"
+                "Please restart the program with 'Run as administrator'."
+            )
+            sys.exit(1)
+
         self.manager = HotspotManager()
         self.root = tk.Tk()
         self.root.title("WiFi Hotspot Controller")
